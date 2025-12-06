@@ -13,6 +13,8 @@ jobs:
       # Esta action valida se o título do PR e os commits seguem o padrão
       # ex: "feat: add wallet domain", "fix: resolve race condition"
       - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           types: |
             feat

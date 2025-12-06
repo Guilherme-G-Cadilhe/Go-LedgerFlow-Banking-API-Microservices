@@ -5,15 +5,15 @@ services:
     image: postgres:15-alpine
     container_name: ledgerflow-postgres
     environment:
-      POSTGRES_DB: ledgerflow
-      POSTGRES_USER: ledger
-      POSTGRES_PASSWORD: secret123
+      POSTGRES_DB: ${DB_NAME:-ledgerflow}
+      POSTGRES_USER: ${DB_USER:-ledger}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secret123}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ledger"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ledger}"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -40,8 +40,8 @@ services:
       - "5672:5672" # AMQP protocol
       - "15672:15672" # Management UI
     environment:
-      RABBITMQ_DEFAULT_USER: ledger
-      RABBITMQ_DEFAULT_PASS: secret123
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-ledger}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-secret123}
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
@@ -58,8 +58,8 @@ services:
     ports:
       - "27017:27017"
     environment:
-      MONGO_INITDB_ROOT_USERNAME: ledger
-      MONGO_INITDB_ROOT_PASSWORD: secret123
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-ledger}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASS:-secret123}
       MONGO_INITDB_DATABASE: ledgerflow
     volumes:
       - mongo_data:/data/db

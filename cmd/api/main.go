@@ -64,15 +64,18 @@ func main() {
 	// Rota de Health Check (para o Docker saber se estamos vivos)
 	router.Get("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		if _, err := w.Write([]byte("OK")); err != nil {
+			log.Error().Err(err).Msg("Falha ao escrever resposta de health check")
+		}
 	})
 
 	// Rota de Transferência (Vamos criar um handler dedicado depois, por enquanto inline para teste)
 	// Em breve moveremos isso para internal/infra/http/handler
 	router.Post("/transfers", func(w http.ResponseWriter, r *http.Request) {
-		// Mock temporário para testar a injeção
 		w.WriteHeader(http.StatusNotImplemented)
-		w.Write([]byte("Endpoint de transferências será implementado no próximo passo"))
+		if _, err := w.Write([]byte("Endpoint de transferências será implementado no próximo passo")); err != nil {
+			log.Error().Err(err).Msg("Falha ao escrever resposta de transfers")
+		}
 	})
 
 	// 6. Subir o Servidor
