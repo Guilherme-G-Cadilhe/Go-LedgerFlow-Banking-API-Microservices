@@ -30,3 +30,9 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Terraform/Docker files locais
+.terraform/
+postgres_data/
+rabbitmq_data/
+mongo_data/
