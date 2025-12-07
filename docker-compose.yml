@@ -1,0 +1,87 @@
+# docker-compose.yml
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: ledgerflow-postgres
+    environment:
+      POSTGRES_DB: ${DB_NAME:-ledgerflow}
+      POSTGRES_USER: ${DB_USER:-ledger}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secret123}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ledger}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - ledgerflow
+
+  redis:
+    image: redis:7-alpine
+    container_name: ledgerflow-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - ledgerflow
+
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: ledgerflow-rabbitmq
+    ports:
+      - "5672:5672" # AMQP protocol
+      - "15672:15672" # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-ledger}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-secret123}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ledgerflow
+
+  mongodb:
+    image: mongo:7
+    container_name: ledgerflow-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-ledger}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASS:-secret123}
+      MONGO_INITDB_DATABASE: ledgerflow
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - ledgerflow
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.51
+    container_name: ledgerflow-jaeger
+    ports:
+      - "16686:16686" # UI
+      - "4318:4318" # OTLP HTTP receiver
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    networks:
+      - ledgerflow
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
+  mongo_data:
+
+networks:
+  ledgerflow:
+    driver: bridge

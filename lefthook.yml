@@ -1,0 +1,15 @@
+# lefthook.yml
+pre-commit:
+  parallel: true
+  commands:
+    lint:
+      run: golangci-lint run ./... || go vet ./...
+    test:
+      run: go test -short ./...
+
+commit-msg:
+  commands:
+    lint-commit-msg:
+      run: |
+        grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?: .+' {1}
+      fail_text: "🚨 Mensagem inválida! Padrão: 'feat: add new endpoint' ou 'fix(db): correct migration'"
