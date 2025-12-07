@@ -33,14 +33,7 @@ func (u *Uow) Run(ctx context.Context, fn func(ctx context.Context) error) error
 		_ = tx.Rollback(ctx)
 	}()
 
-	// Injeta a transação no contexto (opcional) ou podemos passar via closure.
-	// Aqui vamos usar um truque: passaremos a TX como valor no contexto para
-	// que os repositórios possam recuperá-la se necessário, OU (design atual)
-	// o UseCase orquestra isso chamando WithTx.
-
-	// Design Simplificado para este projeto:
-	// Vamos injetar a tx no contexto sob uma chave específica?
-	// Não, vamos usar a chave específica do nosso gateway.
+	// Injeta a transação
 	ctxWithTx := context.WithValue(ctx, gateway.TransactionKey, tx)
 
 	if err := fn(ctxWithTx); err != nil {

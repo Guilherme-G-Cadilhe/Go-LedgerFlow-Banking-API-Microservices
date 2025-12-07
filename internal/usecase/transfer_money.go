@@ -28,6 +28,7 @@ type TransferMoneyUseCase struct {
 	walletRepository      gateway.WalletRepository
 	transactionRepository gateway.TransactionRepository
 	transactionManager    gateway.TransactionManager // Nosso "Unit of Work"
+	eventPublisher        gateway.EventPublisher
 }
 
 // NewTransferMoney cria uma nova instância do UseCase.
@@ -35,11 +36,13 @@ func NewTransferMoney(
 	walletRepo gateway.WalletRepository,
 	transactionRepo gateway.TransactionRepository,
 	txManager gateway.TransactionManager,
+	publisher gateway.EventPublisher,
 ) *TransferMoneyUseCase {
 	return &TransferMoneyUseCase{
 		walletRepository:      walletRepo,
 		transactionRepository: transactionRepo,
 		transactionManager:    txManager,
+		eventPublisher:        publisher,
 	}
 }
 
@@ -53,19 +56,19 @@ func (u *TransferMoneyUseCase) Execute(ctx context.Context, input TransferMoneyI
 	// Se retornar nil, ele faz COMMIT.
 	err := u.transactionManager.Run(ctx, func(contextWithTx context.Context) error {
 
-		// 1. Recuperar o "crachá" da transação que está dentro do contexto.
+		// Recuperar o "crachá" da transação que está dentro do contexto.
 		// Isso foi injetado pelo TransactionManager.Run
 		transactionObject := contextWithTx.Value(gateway.TransactionKey)
 		if transactionObject == nil {
 			return fmt.Errorf("erro crítico: transação não encontrada no contexto")
 		}
 
-		// 2. Criar cópias dos repositórios que usam ESSA transação específica.
+		// Criar cópias dos repositórios que usam ESSA transação específica.
 		// Agora, qualquer comando dado a 'walletRepoTx' rodará dentro do 'BEGIN...COMMIT'.
 		walletRepoTx := u.walletRepository.WithTx(transactionObject)
 		transactionRepoTx := u.transactionRepository.WithTx(transactionObject)
 
-		// 3. Ordenação de IDs para evitar Deadlock (Lock Pessimista)
+		// Ordenação de IDs para evitar Deadlock (Lock Pessimista)
 		// Se a Transferência A->B e B->A acontecerem ao mesmo tempo,
 		// ordenamos para que ambas travem sempre o ID menor primeiro.
 		firstID, secondID := input.FromWalletID, input.ToWalletID
@@ -73,7 +76,7 @@ func (u *TransferMoneyUseCase) Execute(ctx context.Context, input TransferMoneyI
 			firstID, secondID = secondID, firstID
 		}
 
-		// 4. Lock nas Carteiras (SELECT ... FOR UPDATE)
+		// Lock nas Carteiras (SELECT ... FOR UPDATE)
 		// Isso faz o banco TRAVAR essas linhas. Ninguém mais mexe nelas até o Commit.
 		_, err := walletRepoTx.GetByIDForUpdate(contextWithTx, firstID)
 		if err != nil {
@@ -85,7 +88,7 @@ func (u *TransferMoneyUseCase) Execute(ctx context.Context, input TransferMoneyI
 			return fmt.Errorf("falha ao travar carteira %d: %w", secondID, err)
 		}
 
-		// 5. Operação de Débito (Quem envia)
+		// Operação de Débito (Quem envia)
 		// O método Debit do repositório já verifica se tem saldo (balance >= amount).
 		err = walletRepoTx.Debit(contextWithTx, input.FromWalletID, input.Amount)
 		if err != nil {
@@ -93,13 +96,13 @@ func (u *TransferMoneyUseCase) Execute(ctx context.Context, input TransferMoneyI
 			return fmt.Errorf("falha no débito (origem %d): %w", input.FromWalletID, err)
 		}
 
-		// 6. Operação de Crédito (Quem recebe)
+		// Operação de Crédito (Quem recebe)
 		err = walletRepoTx.Credit(contextWithTx, input.ToWalletID, input.Amount)
 		if err != nil {
 			return fmt.Errorf("falha no crédito (destino %d): %w", input.ToWalletID, err)
 		}
 
-		// 7. Registrar o Histórico (Auditoria)
+		// Registrar o Histórico (Auditoria)
 		createdTransaction = &domain.Transaction{
 			FromWalletID:   input.FromWalletID,
 			ToWalletID:     input.ToWalletID,
@@ -118,6 +121,21 @@ func (u *TransferMoneyUseCase) Execute(ctx context.Context, input TransferMoneyI
 
 	if err != nil {
 		return nil, err
+	}
+
+	if u.eventPublisher != nil {
+		event := map[string]interface{}{
+			"transaction_id": createdTransaction.ID,
+			"from_wallet":    input.FromWalletID,
+			"to_wallet":      input.ToWalletID,
+			"amount":         input.Amount,
+			"status":         "completed",
+		}
+		// Routing Key: transaction.created
+		if err := u.eventPublisher.Publish(ctx, "ledger_events", "transaction.created", event); err != nil {
+			// Apenas logamos o erro, não falhamos a request HTTP
+			fmt.Printf("ERRO ao publicar evento: %v\n", err)
+		}
 	}
 
 	return &TransferMoneyOutput{
