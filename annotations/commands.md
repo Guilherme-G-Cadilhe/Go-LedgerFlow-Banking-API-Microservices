@@ -1,3 +1,7 @@
+### Setup
+
+> Executar ./ledger.sh
+
 ### Run Local Go Lint
 
 Install: https://golangci-lint.run/docs/welcome/install/#local-installation
@@ -16,6 +20,15 @@ Wallet 2: Saldo 0
 ### Verificar dinheiro
 
 > docker exec -it ledgerflow-postgres psql -U ledger -d ledgerflow -c "SELECT id, balance FROM wallets;"
+
+### Conectar no MongoDB para ver logs
+
+docker exec -it ledgerflow-mongodb mongosh -u ledger -p secret123
+
+# Dentro do shell do mongo:
+
+use ledgerflow_audit
+db.audit_logs.find()
 
 ### INFRA
 

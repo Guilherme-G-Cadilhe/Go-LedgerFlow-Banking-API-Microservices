@@ -89,8 +89,13 @@ func main() {
 	})
 	if err != nil {
 		log.Warn().Err(err).Msg("Falha ao conectar no RabbitMQ (Eventos não serão enviados)")
-	} else {
-		defer rabbitConn.Close()
+	}
+	if rabbitConn != nil {
+		defer func() {
+			if err := rabbitConn.Close(); err != nil {
+				log.Error().Err(err).Msg("Erro ao fechar conexão RabbitMQ")
+			}
+		}()
 		log.Info().Msg("✅ Conectado ao RabbitMQ!")
 	}
 
@@ -100,7 +105,11 @@ func main() {
 		if err != nil {
 			log.Fatal().Err(err).Msg("Falha ao abrir canal RabbitMQ")
 		}
-		defer ch.Close()
+		defer func() {
+			if err := ch.Close(); err != nil {
+				log.Error().Err(err).Msg("Erro ao fechar canal RabbitMQ")
+			}
+		}()
 
 		// Declarar Exchange (Tópico)
 		err = ch.ExchangeDeclare(
@@ -129,10 +138,11 @@ func main() {
 	// Inicialização da Camada de UseCase (Regras de Negócio)
 	transferUseCase := usecase.NewTransferMoney(walletRepository, transactionRepository, uow, eventPublisher)
 	createWalletUseCase := usecase.NewCreateWallet(walletRepository)
+	getWalletUseCase := usecase.NewGetWallet(walletRepository)
 
 	// Handlers
 	transferHandler := handler.NewTransferHandler(transferUseCase)
-	walletHandler := handler.NewWalletHandler(createWalletUseCase)
+	walletHandler := handler.NewWalletHandler(createWalletUseCase, getWalletUseCase)
 
 	// Configuração do Servidor HTTP (Router Chi)
 	router := chi.NewRouter()
@@ -157,6 +167,7 @@ func main() {
 		r.Post("/transfers", transferHandler.Create)
 	})
 	router.Post("/wallets", walletHandler.Create)
+	router.Get("/wallets/{id}", walletHandler.Get)
 
 	// 6. Subir o Servidor
 	port := ":8080"

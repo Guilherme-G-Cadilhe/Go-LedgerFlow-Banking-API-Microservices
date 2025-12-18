@@ -50,6 +50,28 @@ func NewTransferMoney(
 func (u *TransferMoneyUseCase) Execute(ctx context.Context, input TransferMoneyInput) (*TransferMoneyOutput, error) {
 	// Variável para capturar o resultado de dentro da transação
 	var createdTransaction *domain.Transaction
+	// Variáveis para o evento
+	transactionStatus := "failed"
+	var createdTransactionID string
+
+	// Isso roda SEMPRE antes da função retornar, seja sucesso ou erro.
+	defer func() {
+		if u.eventPublisher != nil {
+			event := map[string]interface{}{
+				"transaction_id": createdTransactionID, // Pode estar vazio se falhar antes de criar
+				"from_wallet":    input.FromWalletID,
+				"to_wallet":      input.ToWalletID,
+				"amount":         input.Amount,
+				"status":         transactionStatus,
+				"reason":         "", // Poderíamos adicionar a razão do erro aqui
+			}
+
+			// Define o tópico baseado no status
+			routingKey := "transaction." + transactionStatus // transaction.created ou transaction.failed
+
+			_ = u.eventPublisher.Publish(ctx, "ledger_events", routingKey, event)
+		}
+	}()
 
 	// u.transactionManager.Run inicia uma transação no banco (BEGIN).
 	// Se a função anônima retornar erro, ele faz ROLLBACK automático.
@@ -116,26 +138,14 @@ func (u *TransferMoneyUseCase) Execute(ctx context.Context, input TransferMoneyI
 			return fmt.Errorf("falha ao salvar histórico da transação: %w", err)
 		}
 
+		createdTransactionID = createdTransaction.ID
+		transactionStatus = "completed"
+
 		return nil // Sucesso! O Commit será executado agora.
 	})
 
 	if err != nil {
 		return nil, err
-	}
-
-	if u.eventPublisher != nil {
-		event := map[string]interface{}{
-			"transaction_id": createdTransaction.ID,
-			"from_wallet":    input.FromWalletID,
-			"to_wallet":      input.ToWalletID,
-			"amount":         input.Amount,
-			"status":         "completed",
-		}
-		// Routing Key: transaction.created
-		if err := u.eventPublisher.Publish(ctx, "ledger_events", "transaction.created", event); err != nil {
-			// Apenas logamos o erro, não falhamos a request HTTP
-			fmt.Printf("ERRO ao publicar evento: %v\n", err)
-		}
 	}
 
 	return &TransferMoneyOutput{
