@@ -1,0 +1,49 @@
+@baseUrl = http://localhost:8080
+@contentType = application/json
+
+### -------------------------------------------------------
+### HEALTH CHECK
+### -------------------------------------------------------
+GET {{baseUrl}}/health
+
+### -------------------------------------------------------
+### WALLETS (Carteiras)
+### -------------------------------------------------------
+
+### Criar Carteira 1 (Saldo Inicial R$ 100,00)
+# @name create_wallet_1
+POST {{baseUrl}}/wallets
+Content-Type: {{contentType}}
+
+{
+    "balance": 10000
+}
+
+### Criar Carteira 2 (Saldo Inicial R$ 0,00)
+# @name create_wallet_2
+POST {{baseUrl}}/wallets
+Content-Type: {{contentType}}
+
+{
+    "balance": 0
+}
+
+### Obter Carteira 1 (Verificar Saldo)
+GET {{baseUrl}}/wallets/2
+
+### -------------------------------------------------------
+### TRANSFERS (Transferências)
+### -------------------------------------------------------
+
+### Transferir R$ 10,00 da Carteira 1 para Carteira 2
+# Header Idempotency-Key simula um ID único gerado pelo front.
+# Se você enviar o mesmo UUID de novo (após implementarmos o middleware), ele não deve processar.
+POST {{baseUrl}}/transfers
+Content-Type: {{contentType}}
+Idempotency-Key: {{$guid}}
+
+{
+    "from_wallet_id": 2,
+    "to_wallet_id": 1,
+    "amount": 5000
+}

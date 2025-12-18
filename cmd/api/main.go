@@ -2,15 +2,24 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"time"
 
+	"github.com/Guilherme-G-Cadilhe/Go-LedgerFlow-Banking-API-Microservices/internal/gateway"
+	"github.com/Guilherme-G-Cadilhe/Go-LedgerFlow-Banking-API-Microservices/internal/infra/http/handler"
+	internalMiddleware "github.com/Guilherme-G-Cadilhe/Go-LedgerFlow-Banking-API-Microservices/internal/infra/http/middleware"
 	"github.com/Guilherme-G-Cadilhe/Go-LedgerFlow-Banking-API-Microservices/internal/infra/postgres"
+	"github.com/Guilherme-G-Cadilhe/Go-LedgerFlow-Banking-API-Microservices/internal/infra/rabbitmq"
+	redisInfra "github.com/Guilherme-G-Cadilhe/Go-LedgerFlow-Banking-API-Microservices/internal/infra/redis"
 	"github.com/Guilherme-G-Cadilhe/Go-LedgerFlow-Banking-API-Microservices/internal/usecase"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/joho/godotenv"
+	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -20,11 +29,26 @@ func main() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr}) // Log bonito no terminal
 
+	// O erro é ignorado de propósito, pois em Produção (Docker/K8s)
+	// não usamos arquivo .env, usamos variáveis reais do sistema.
+	if err := godotenv.Load(); err != nil {
+		log.Warn().Msg("Arquivo .env não encontrado, usando variáveis de ambiente do sistema")
+	}
 	ctx := context.Background()
 
-	// 2. Conexão com Banco de Dados (Postgres via PGXPool)
-	// Em prod, essa string viria de variável de ambiente (os.Getenv)
-	dbURL := "postgresql://ledger:secret123@localhost:5432/ledgerflow?sslmode=disable"
+	dbUser := os.Getenv("DB_USER")
+	dbPass := os.Getenv("DB_PASSWORD")
+	dbHost := "localhost" // Em docker seria o nome do service, local é localhost
+	if os.Getenv("DB_HOST") != "" {
+		dbHost = os.Getenv("DB_HOST")
+	}
+	dbName := os.Getenv("DB_NAME")
+
+	dbURL := fmt.Sprintf("postgres://%s:%s@%s:5432/%s?sslmode=disable", dbUser, dbPass, dbHost, dbName)
+	// Fallback para dev local se as envs não estiverem setadas
+	if dbUser == "" {
+		dbURL = "postgres://ledger:secret123@localhost:5432/ledgerflow?sslmode=disable"
+	}
 
 	dbPool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
@@ -32,34 +56,102 @@ func main() {
 	}
 	defer dbPool.Close()
 
-	// Verifica se o banco está respondendo
 	if err := dbPool.Ping(ctx); err != nil {
 		log.Fatal().Err(err).Msg("Banco de dados não está respondendo")
 	}
 	log.Info().Msg("✅ Conectado ao PostgreSQL com sucesso!")
 
-	// 3. Inicialização da Camada de Infraestrutura (Repositories)
+	redisHost := os.Getenv("REDIS_HOST")
+	if redisHost == "" {
+		redisHost = "localhost"
+	}
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: redisHost + ":6379",
+	})
+	if err := redisClient.Ping(ctx).Err(); err != nil {
+		log.Warn().Err(err).Msg("Não foi possível conectar ao Redis (Idempotência desabilitada)")
+	} else {
+		log.Info().Msg("✅ Conectado ao Redis!")
+	}
+
+	rabbitUser := os.Getenv("RABBITMQ_USER")
+	rabbitPass := os.Getenv("RABBITMQ_PASS")
+	rabbitHost := os.Getenv("RABBITMQ_HOST")
+	if rabbitHost == "" {
+		rabbitHost = "localhost"
+	} // Fallback local
+
+	rabbitURL := fmt.Sprintf("amqp://%s:%s@%s:5672/", rabbitUser, rabbitPass, rabbitHost)
+	rabbitConn, err := amqp.DialConfig(rabbitURL, amqp.Config{
+		Properties: amqp.Table{
+			"connection_name": "LedgerAPI_Publisher", // <--- O Nome Mágico
+		},
+	})
+	if err != nil {
+		log.Warn().Err(err).Msg("Falha ao conectar no RabbitMQ (Eventos não serão enviados)")
+	}
+	if rabbitConn != nil {
+		defer func() {
+			if err := rabbitConn.Close(); err != nil {
+				log.Error().Err(err).Msg("Erro ao fechar conexão RabbitMQ")
+			}
+		}()
+		log.Info().Msg("✅ Conectado ao RabbitMQ!")
+	}
+
+	var eventPublisher gateway.EventPublisher
+	if rabbitConn != nil {
+		ch, err := rabbitConn.Channel()
+		if err != nil {
+			log.Fatal().Err(err).Msg("Falha ao abrir canal RabbitMQ")
+		}
+		defer func() {
+			if err := ch.Close(); err != nil {
+				log.Error().Err(err).Msg("Erro ao fechar canal RabbitMQ")
+			}
+		}()
+
+		// Declarar Exchange (Tópico)
+		err = ch.ExchangeDeclare(
+			"ledger_events", // name
+			"topic",         // type
+			true,            // durable
+			false,           // auto-deleted
+			false,           // internal
+			false,           // no-wait
+			nil,             // arguments
+		)
+		if err != nil {
+			log.Fatal().Err(err).Msg("Falha ao declarar Exchange")
+		}
+
+		eventPublisher = rabbitmq.NewRabbitMQPublisher(ch)
+	}
+
+	// Inicialização da Camada de Infraestrutura (Repositories)
+	idempotencyRepo := redisInfra.NewIdempotencyRepository(redisClient)
 	walletRepository := postgres.NewWalletRepository(dbPool)
 	transactionRepository := postgres.NewTransactionRepository(dbPool)
-
-	// O Unit of Work (Gerenciador de Transações) também precisa do pool
+	//  Unit of Work (Gerenciador de Transações)
 	uow := postgres.NewUow(dbPool)
 
-	// 4. Inicialização da Camada de UseCase (Regras de Negócio)
-	// Injetamos os repositórios e o transaction manager aqui
-	usecase.NewTransferMoney(
-		walletRepository,
-		transactionRepository,
-		uow,
-	)
+	// Inicialização da Camada de UseCase (Regras de Negócio)
+	transferUseCase := usecase.NewTransferMoney(walletRepository, transactionRepository, uow, eventPublisher)
+	createWalletUseCase := usecase.NewCreateWallet(walletRepository)
+	getWalletUseCase := usecase.NewGetWallet(walletRepository)
 
-	// 5. Configuração do Servidor HTTP (Router Chi)
+	// Handlers
+	transferHandler := handler.NewTransferHandler(transferUseCase)
+	walletHandler := handler.NewWalletHandler(createWalletUseCase, getWalletUseCase)
+
+	// Configuração do Servidor HTTP (Router Chi)
 	router := chi.NewRouter()
 
 	// Middlewares básicos
 	router.Use(middleware.Logger)
 	router.Use(middleware.Recoverer) // Evita crash se der panic
 	router.Use(middleware.Timeout(60 * time.Second))
+	idempotencyMiddleware := internalMiddleware.Idempotency(idempotencyRepo)
 
 	// Rota de Health Check (para o Docker saber se estamos vivos)
 	router.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -69,14 +161,13 @@ func main() {
 		}
 	})
 
-	// Rota de Transferência (Vamos criar um handler dedicado depois, por enquanto inline para teste)
-	// Em breve moveremos isso para internal/infra/http/handler
-	router.Post("/transfers", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotImplemented)
-		if _, err := w.Write([]byte("Endpoint de transferências será implementado no próximo passo")); err != nil {
-			log.Error().Err(err).Msg("Falha ao escrever resposta de transfers")
-		}
+	// Rotas
+	router.Group(func(r chi.Router) {
+		r.Use(idempotencyMiddleware)
+		r.Post("/transfers", transferHandler.Create)
 	})
+	router.Post("/wallets", walletHandler.Create)
+	router.Get("/wallets/{id}", walletHandler.Get)
 
 	// 6. Subir o Servidor
 	port := ":8080"
